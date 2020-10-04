@@ -2,7 +2,7 @@
 """
 Created on Sun Oct  4 15:09:23 2020
 
-This script integrates the core functions of Mask_RCNN into a single file, with 
+This script integrates the core functions of Mask_RCNN (https://github.com/matterport/Mask_RCNN) into a single file, with 
 modifications made on dataset handling for VoTT based annotations, data agumentation 
 and model training, for weed segmentation.
 
