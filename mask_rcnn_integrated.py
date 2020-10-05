@@ -289,9 +289,9 @@ class WeedDataset(Dataset):
             return annot_INFO 
         
     def load_mask(self, image_id):
-        return self.load_VoTT_mask(image_id)
+        return self.loadMask(image_id)
     
-    def load_VoTT_mask(self,image_id):
+    def loadMask(self,image_id):
         """
         load instance mask given an image
         Return a boolean mask array and corresponding class ID
