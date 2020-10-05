@@ -629,6 +629,7 @@ def train_valid_split(dataDir, validation_split=0.25):
     import numpy as np
     from itertools import compress
     files = os.listdir(dataDir)
+    files.sort()
     
     jsonFiles = list(compress(files,[f.endswith(".json") for f in files])) 
     imgFiles = list(compress(files,[f.lower().endswith((".jpeg",".jpg",".png",".tiff")) for f in files]))
