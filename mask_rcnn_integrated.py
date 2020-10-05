@@ -384,7 +384,11 @@ def visualize_instances(image, image_mask, boxes=None, class_names=None, figsize
     ax.axis('off')
     
     N  = image_mask.shape[-1] # number of objects
-    
+    if boxes is not None:
+        assert boxes.shape[0] == N, "Not enough bounding boxes!"
+    if class_names is not None:
+        assert len(class_names) == N, "Not enough class names!"
+        
     #color settings
     if colors is None:
         import random 
@@ -400,7 +404,8 @@ def visualize_instances(image, image_mask, boxes=None, class_names=None, figsize
         
         # bounding boxes
         if boxes is not None:
-            xmin, ymin, xmax, ymax = boxes[i]
+            #xmin, ymin, xmax, ymax = boxes[i]
+            ymin, xmin, ymax, xmax = boxes[i] #be consistent with the annotation output
             p = patches.Rectangle((xmin,ymin),xmax-xmin,ymax-ymin, 
                                   linewidth=2, alpha=0.7, linestyle='dashed',
                                   edgecolor=color,facecolor='none')
