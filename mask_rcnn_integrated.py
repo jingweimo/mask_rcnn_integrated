@@ -399,7 +399,7 @@ def visualize_instances(image, image_mask, boxes=None, class_names=None, figsize
         color = colors[i]
         
         # bounding boxes
-        if boxes:
+        if boxes is not None:
             xmin, ymin, xmax, ymax = boxes[i]
             p = patches.Rectangle((xmin,ymin),xmax-xmin,ymax-ymin, 
                                   linewidth=2, alpha=0.7, linestyle='dashed',
@@ -901,6 +901,7 @@ def data_generator(dataset, config, shuffle=True, augmentation=None, random_rois
 ###############################################################################
 # Mask_RCNN
 ###############################################################################
+import keras
 import mrcnn.model
 from mrcnn.model import MaskRCNN
 class Mask_RCNN(MaskRCNN):
