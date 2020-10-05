@@ -994,4 +994,29 @@ class Mask_RCNN(MaskRCNN):
                                           workers=workers,
                                           use_multiprocessing=True)
         self.epoch = max(self.epoch, epochs)
+   
+    def find_last_checkpoint(self):
+        """
+        find the path of the last checkpoint file of the last trained model
+        in the model directory
+        """
+        folder_names = next(os.walk(self.model_dir))[1]
+        key = self.config.NAME.lower()
+        folder_names = filter(lambda f:f.startswith(key), folder_names)
+        folder_names = sorted(folder_names)
+        if not folder_names:
+            import errno
+            raise FileNotFoundError(errno.ENOENT, "Could not find model directory under {}".format(self.model_dir))
+        # checkpoint folder
+        dir_name = os.path.join(self.model_dir,folder_names[-1]) #the last (most recent) checkpoint folder
+        
+        checkpointFiles = next(os.walk(dir_name))[2]
+        checkpointFiles = filter(lambda f:f.startswith("mask_rcnn"), checkpoints)
+        checkpointFiles = sorted(checkpointFiles)
+        if not checkpointFiles:
+            import errno
+            raise FileNotFoundError(errno.ENOENT, "Could not find weigth file under {}".format(dir_name))
+        # checkpoint weight file
+        checkpointFilePath = os.path.join(dir_name,checkpointFiles[-1])
+        return checkpointFilePath
         
