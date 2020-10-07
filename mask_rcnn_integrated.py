@@ -208,7 +208,8 @@ class WeedDataset(Dataset):
         polygons = []
         boundingBoxes = []
         for roi in imgRegions:
-            objTag = roi["tags"][0]
+            # objTag = roi["tags"][0]
+            objTag = roi["tags"]
             objBoundingBox = roi["boundingBox"] #{"height': ,'width': ,'left': ,'top':}
             objPoints = roi["points"] #N-element dict, each corresponding to a dict {'x': ,'y': }
             objXPoints = list(point['x'] for point in objPoints)
