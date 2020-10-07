@@ -1078,7 +1078,7 @@ def compute_matches(gt_boxes, gt_class_ids, gt_masks,
     pred_match = -1*np.ones([pred_boxes.shape[0]])
     gt_match = -1*np.ones([gt_boxes.shape[0]])
     for ii in range(len(pred_boxes)):
-        sorted_idx = np.argsort(overlaps[ii])[:,:,-1] #decreasing order
+        sorted_idx = np.argsort(overlaps[ii])[::-1] #decreasing order
         # filter those with lower scores
         lower_score_idx = np.where(overlaps[ii,sorted_idx] < score_threshold)[0]
         if lower_score_idx.size>0:
