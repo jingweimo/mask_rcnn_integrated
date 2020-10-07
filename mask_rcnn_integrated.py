@@ -645,6 +645,16 @@ def train_valid_split(dataDir, validation_split=0.25):
     imgFiles_val = [imgFiles[i] for i in val_idx]
     return imgFiles_train, jsonFiles_train, imgFiles_val, jsonFiles_val
 
+def mold_image(images, config):
+    """Expects an RGB image (or array of images) and subtracts
+    the mean pixel and converts it to float. Expects image
+    colors in RGB order.
+    """
+    return images.astype(np.float32) - config.MEAN_PIXEL
+
+def unmold_image(molded_images, config):
+    """Takes a image normalized with mold() and returns the original."""
+    return (molded_images + config.MEAN_PIXEL).astype(np.uint8)
 
 ###############################################################################
 # Data generator
@@ -750,13 +760,6 @@ def minimize_mask(bbox, mask, mini_shape):
         m = skimage.transform.resize(m, mini_shape, order=1, mode='constant', cval=0, clip=True)
         mini_mask[:, :, i] = np.around(m).astype(np.bool)
     return mini_mask
-
-def mold_image(images, config):
-    # meaning centering
-    return images.astype(np.float32) - config.MEAN_PIXEL
-
-def unmold_image(normalized_images, config):
-    return (normalized_images + config.MEAN_PIXEL).astype(np.uint8)
 
 
 def data_generator(dataset, config, shuffle=True, augmentation=None, random_rois=0,
@@ -1021,3 +1024,74 @@ class Mask_RCNN(MaskRCNN):
         checkpointFilePath = os.path.join(dir_name,checkpointFiles[-1])
         return checkpointFilePath
         
+###############################################################################
+# Evaluation Metrics
+###############################################################################        
+def trim_row_zeros(x):
+    # remove rows with zero entries 
+    assert len(x.shape) == 2 #2D array
+    row_zeros_index = np.all(x==0,axis=1)
+    return x[~row_zeros_index]
+
+def compute_matches(gt_boxes, gt_class_ids, gt_masks,
+                    pred_boxes, pred_class_ids, pred_scores, pred_masks,
+                    iou_threshold=0.5, score_threshold = 0.0):
+    """
+    Compute the matches between ground-truth and predicted instances of the same class
+    Returns: 
+        gt_match: 1-D array. For each gt_box, it has the index of the matched predicted box
+        pred_match: 1-D array. For each pred_box, it has the index of the match ground-truth box
+        overlaps: [pred_boxes, gt_boxes] IoU overlapps
+    """
+    gt_boxes = trim_row_zeros(gt_boxes)
+    gt_masks = gt_masks[..., :gt_boxes.shape[0]]
+    pred_boxes = trim_row_zeros(pred_boxes)
+    pred_scores = pred_scores[:pred_boxes.shape[0]]
+    
+    # sort by scores in descending order
+    idx = np.argsort(pred_scores)[::-1]
+    pred_boxes = pred_boxes[idx]
+    pred_class_ids = pred_class_ids[idx]
+    pred_scores = pred_scores[idx]
+    pred_masks = pred_masks[...,idx]
+    
+    # compute IoU overlaps between pred_masks and gt_masks
+    def compute_overlaps_masks(masks1, masks2):
+        if masks1.shape[-1] ==0 or masks2.shape[-1] == 0:
+            return np.zeros((masks1.shape[-1], masks2.shape[-1]))
+        #vectorized (each column represent one mask)
+        masks1 = np.reshape(masks1>0.5, (-1, masks1.shape[-1])).astype(np.float32)
+        masks2 = np.reshape(masks2>0.5, (-1, masks2.shape[-1])).astype(np.float32)
+        areas1 = np.sum(masks1,axis=0) 
+        areas2 = np.sum(masks2,axis=0)
+        # intersection and unio
+        intersections = np.dot(masks1.T, masks2) #matrix multiplication
+        unions = areas1[:,None] + areas2[None,:] - intersections #UnionAB = A + B - IoU_AB
+        
+        #overlap ratios
+        overlaps = intersections / unions 
+        return overlaps
+        
+    overlaps = compute_overlaps_masks(pred_masks, gt_masks)
+    match_count = 0
+    pred_match = -1*np.ones([pred_boxes.shape[0]])
+    gt_match = -1*np.ones([gt_boxes.shape[0]])
+    for ii in range(len(pred_boxes)):
+        sorted_idx = np.argsort(overlaps[ii])[:,:,-1] #decreasing order
+        # filter those with lower scores
+        lower_score_idx = np.where(overlaps[ii,sorted_idx] < score_threshold)[0]
+        if lower_score_idx.size>0:
+            sorted_idx = sorted_idx[:,lower_score_idx[0]]
+        # find the match
+        for jj in sorted_idx:
+            if gt_match[jj] > -1:
+                continue
+            iou = overlaps[ii,jj]
+            if iou < iou_threshold:
+                break
+            if pred_class_ids[ii] == gt_class_ids[jj]:
+                match_count += 1
+                gt_match[jj] = ii
+                pred_match[ii] = jj
+                break
+    return gt_match, pred_match, overlaps
