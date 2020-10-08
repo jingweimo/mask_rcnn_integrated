@@ -1034,6 +1034,23 @@ def trim_row_zeros(x):
     row_zeros_index = np.all(x==0,axis=1)
     return x[~row_zeros_index]
 
+# compute IoU overlaps between pred_masks and gt_masks
+def compute_overlaps_masks(masks1, masks2):
+    if masks1.shape[-1] ==0 or masks2.shape[-1] == 0:
+        return np.zeros((masks1.shape[-1], masks2.shape[-1]))
+    #vectorized (each column represent one mask)
+    masks1 = np.reshape(masks1>0.5, (-1, masks1.shape[-1])).astype(np.float32)
+    masks2 = np.reshape(masks2>0.5, (-1, masks2.shape[-1])).astype(np.float32)
+    areas1 = np.sum(masks1,axis=0) 
+    areas2 = np.sum(masks2,axis=0)
+    # intersection and unio
+    intersections = np.dot(masks1.T, masks2) #matrix multiplication
+    unions = areas1[:,None] + areas2[None,:] - intersections #UnionAB = A + B - IoU_AB
+    
+    #overlap ratios
+    overlaps = intersections / unions 
+    return overlaps
+
 def compute_matches(gt_boxes, gt_class_ids, gt_masks,
                     pred_boxes, pred_class_ids, pred_scores, pred_masks,
                     iou_threshold=0.5, score_threshold = 0.0):
@@ -1056,23 +1073,7 @@ def compute_matches(gt_boxes, gt_class_ids, gt_masks,
     pred_scores = pred_scores[idx]
     pred_masks = pred_masks[...,idx]
     
-    # compute IoU overlaps between pred_masks and gt_masks
-    def compute_overlaps_masks(masks1, masks2):
-        if masks1.shape[-1] ==0 or masks2.shape[-1] == 0:
-            return np.zeros((masks1.shape[-1], masks2.shape[-1]))
-        #vectorized (each column represent one mask)
-        masks1 = np.reshape(masks1>0.5, (-1, masks1.shape[-1])).astype(np.float32)
-        masks2 = np.reshape(masks2>0.5, (-1, masks2.shape[-1])).astype(np.float32)
-        areas1 = np.sum(masks1,axis=0) 
-        areas2 = np.sum(masks2,axis=0)
-        # intersection and unio
-        intersections = np.dot(masks1.T, masks2) #matrix multiplication
-        unions = areas1[:,None] + areas2[None,:] - intersections #UnionAB = A + B - IoU_AB
-        
-        #overlap ratios
-        overlaps = intersections / unions 
-        return overlaps
-        
+    # compute IoU
     overlaps = compute_overlaps_masks(pred_masks, gt_masks)
     match_count = 0
     pred_match = -1*np.ones([pred_boxes.shape[0]])
@@ -1096,3 +1097,149 @@ def compute_matches(gt_boxes, gt_class_ids, gt_masks,
                 pred_match[ii] = jj
                 break
     return gt_match, pred_match, overlaps
+    
+def compute_ap(gt_boxes, gt_class_ids, gt_masks, 
+               pred_boxes, pred_class_ids, pred_scores, pred_masks, iou_threshold=0.5):
+    """
+    Return: 
+        mAP: mean average precision
+        precions: list of precisions at different class score thresholds
+        recalls: list of recall values at different class score thresolds
+        overlaps: IoU overlaps between gt_boxes and pred_boxes
+    """
+    # score_threshold = 0.0
+    gt_match, pred_match, overlaps = compute_matches(gt_boxes, gt_class_ids, gt_masks, 
+                                                     pred_boxes, pred_class_ids, pred_scores, 
+                                                     pred_masks, iou_threshold)
+    
+    # compute precision and recall
+    # Precision = TP/(TP + FP)
+    # Recall = TP/(TP + FN)
+    precisions = np.cumsum(pred_match>-1)/(np.arange(len(pred_match)) + 1)
+    recalls = np.cumsum(pred_match>-1).astype(np.float32)/len(gt_match)
+    
+    # ensure preisions values don't increase
+    precisions = np.concatenate([[0], precisions, [0]])
+    for i in range(len(precisions)-2,-1,-1):
+        precisions[i] = np.maximum(precisions[i], precisions[i+1])
+    
+    recalls = np.concatenate([[0], recalls, [1]]) # serve as a sequence within [0, 1] in the x-axis 
+    # mAP = sum((R_n - R_n-1)*Pn) (retangular approximination)
+    Rn0 = recalls[:-1]
+    Rn1 = recalls[1:]
+    idx = np.where(Rn0!=Rn1)[0]+1
+    mAP = np.sum((recalls[idx]-recalls[idx-1])*precisions[idx])
+    return mAP, precisions, recalls, overlaps
+    
+def compute_model_ap(infModel, dataset, cfg):
+    """
+    Compute the average AP given the trained model and dataset (no dinstincion made among classes)
+    """
+    AP = []
+    for image_id in dataset.image_ids:
+        image, image_meta, gt_class_id, gt_bbox, gt_mask = \
+            load_image_gt_da(dataset, cfg, image_id, augmentation=False,
+                             use_mini_mask=False)
+        # detection
+        detection = infModel.detect([image], verbose=0)
+        detection = detection[0]
+        pred_bbox = detection["rois"]
+        pred_mask = detection['masks']
+        pred_score = detection['scores']
+        pred_class_id = detection['class_ids']
+        # compute AP
+        ap, _, _, _ = compute_ap(gt_bbox, gt_class_id, gt_mask,
+                                 pred_bbox, pred_class_id, pred_score, pred_mask,
+                                 iou_threshold=0.5)
+        AP.append(ap)
+    mAP = np.array(AP).mean()
+    return mAP
+   
+def plot_precision_recall(AP, precisions, recalls):
+    """
+    Draw the precision-recall curve (for a single detected image)
+    AP: ap at IoU >= 0.5
+    precisions: list of precision values
+    recalls: list of recall values
+    """
+    _, ax = plt.subplots(1)
+    ax.set_title("Precision-Recall Curve. AP@50={:.3f}".format(AP))
+    ax.set_ylim(0,1.1)
+    ax.set_xlim(0,1.1)
+    _ = ax.plot(recalls, precisions)
+    
+def compute_ap_range(gt_box, gt_class_id, gt_mask, pred_box, pred_class_id, pred_score,
+                     pred_mask, iou_thresholds=None, verbose=1):
+    """
+    Compute mean AP over a range of IoU thresholds. Default to [0.5:0.05:0.95]
+    """
+    # https://stackoverflow.com/questions/21566106/what-does-an-x-y-or-z-assignment-do-in-python
+    iou_thresholds = iou_thresholds or np.arange(0.5, 1.0, 0.05)
+    
+    # compute APs
+    AP = []
+    for iou_threshold in iou_thresholds:
+        ap, precisions, recalls, overlaps = compute_ap(gt_box, gt_class_id, gt_mask, 
+                                                       pred_box, pred_class_id, 
+                                                       pred_score, pred_mask,
+                                                       iou_threshold=iou_threshold)
+        if verbose:
+            print("AP@{:.2f}:\t {:.3f}".format(iou_threshold, ap))
+        AP.append(ap)
+    AP = np.array(AP).mean()
+    if verbose:
+        print("AP@{:.2f}-{:.2f}:\t {:.3f}".format(iou_thresholds[0],iou_thresholds[-1],
+                                                  AP))
+    return AP
+
+def compute_iou(box, boxes, box_area, boxes_area):
+    """
+    Compute bounding-box-based IoU of the given box with the array of the given boxes
+    
+    box: 1D vector [y1, x1, y2, x2]
+    boxes: [boxes_count, (y1, x1, y2, x2)]
+    box_area: float. the area of 'box'
+    boxes_area: array of length boxes_count.
+    
+    Return: an array of IoUs for each of the given boxes
+    """
+    # element-wise calculation
+    y1 = np.maximum(box[0], boxes[:, 0])
+    y2 = np.minimum(box[2], boxes[:, 2])
+    x1 = np.maximum(box[1], boxes[:, 1])
+    x2 = np.minimum(box[3], boxes[:, 3])
+    intersection = np.maximum(x2 - x1, 0) * np.maximum(y2 - y1, 0)
+    union = box_area + boxes_area[:] - intersection[:]
+    iou = intersection / union
+    return iou
+
+def compute_overlaps(boxes1, boxes2):
+    """
+    Compute IoUs between two set of boxes
+    For better performance, pass the largest set first and the smaller second.
+    """
+    # Areas of anchors and GT boxes
+    area1 = (boxes1[:, 2] - boxes1[:, 0]) * (boxes1[:, 3] - boxes1[:, 1])
+    area2 = (boxes2[:, 2] - boxes2[:, 0]) * (boxes2[:, 3] - boxes2[:, 1])
+
+    # Compute overlaps to generate matrix [boxes1 count, boxes2 count]
+    # Each cell contains the IoU value.
+    overlaps = np.zeros((boxes1.shape[0], boxes2.shape[0]))
+    for i in range(overlaps.shape[1]):
+        box2 = boxes2[i]
+        overlaps[:, i] = compute_iou(box2, boxes1, area2[i], area1)
+    return overlaps
+       
+    
+def compute_recall(pred_boxes, gt_boxes, iou):
+    """
+    Compute recall at the given IoU threshold
+    """
+    overlaps = compute_overlaps(pred_boxes, gt_boxes)
+    iou_max = np.max(overlaps, axis=1)
+    iou_argmax = np.argmax(overlaps, axis=1)
+    positive_ids = np.where(iou_max>=iou)[0] # IDs of the detected object
+    matched_gt_boxes = iou_argmax[positive_ids]
+    
+    recall = len(set(matched_gt_boxes))/gt_boxes.shape[0]
+    return recall, positive_ids
